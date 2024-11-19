@@ -2,13 +2,15 @@
 
 import { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase'; // assuming firebase is initialized here
-import { collection, onSnapshot, doc, updateDoc, getDoc, DocumentReference, Timestamp } from 'firebase/firestore'; // Import onSnapshot
+import { collection, query, orderBy, onSnapshot, doc, updateDoc, getDoc, addDoc, DocumentReference, Timestamp, where, getDocs } from 'firebase/firestore'; // Import onSnapshot
 import { Tabs, Tab } from '@mui/material'; // For Tab functionality, you can use MUI or similar component libraries
 import TextField from '@mui/material/TextField';
 import Checkbox from '@mui/material/Checkbox';
 import Button from '@mui/material/Button';
 import MenuItem from '@mui/material/MenuItem';
 import Select, { SelectChangeEvent } from '@mui/material/Select';
+import { InputLabel} from '@mui/material';
+
 
 // Define a type for job descriptions
 interface JobDescription {
@@ -28,6 +30,8 @@ interface JobDescription {
     level?: string;
     jd_copy_ref?: DocumentReference; // Reference to the jd-copy document
     jd_html_ref?: DocumentReference; // Reference to the jd-html document
+    status?: string;
+    notes?: string;
 }
 
 export default function JobDescriptionsPage() {
@@ -49,54 +53,69 @@ export default function JobDescriptionsPage() {
     js_html: '',
     domain: '',
     level: '',
+    status: '',
+    notes: ''
   });
 
   const [activeJobIndex, setActiveJobIndex] = useState<number | null>(null); // Track the active job index
   const [activeJobId, setActiveJobId] = useState<string | null>(null); // Track the active job ID
 
+  const [target, setTarget] = useState('');
+  const [targetEmail, setTargetEmail] = useState("")
+  const [type, setType] = useState('LI connect'); // Default to 'LI connect'
+  const [message, setMessage] = useState('');
+  const [notes, setNotes] = useState('');
+
   // Fetch job descriptions from Firebase Firestore
   useEffect(() => {
+    // Reference to the collection
     const jobDescCollection = collection(db, 'jd-postings-summary');
-
-    const unsubscribe = onSnapshot(jobDescCollection, async (snapshot) => {
-      const jobDescList = await Promise.all(snapshot.docs.map(async (doc) => {
-        const summaryData = doc.data() as JobDescription;
-
-        console.log('summaryData', summaryData)
-
-        // Fetching references
-        const copyRef = summaryData.jd_copy_ref;
-        const htmlRef = summaryData.jd_html_ref;
-
-        if (!copyRef || !htmlRef) {
-          console.error("Document references are missing:", { copyRef, htmlRef });
-          return { ...summaryData, jd_copy: '', jd_html: '' }; // Fallback
-        }
-
-        try {
-          // Fetch the copy document
-          const copyDoc = await getDoc(copyRef);
-          const copyData = copyDoc.exists() ? copyDoc.data() : { jd_copy: '' };
-
-          // Fetch the html document
-          const htmlDoc = await getDoc(htmlRef);
-          const htmlData = htmlDoc.exists() ? htmlDoc.data() : { html: '' };
-
-          // Combine the summary with the copy and html data
-          return {
-            ...summaryData,
-            jd_copy: copyData.jd_copy || '', // Extract the copy
-            jd_html: htmlData.html || '' // Extract the html
-          };
-        } catch (error) {
-          console.error("Error fetching documents:", error);
-          return { ...summaryData, jd_copy: '', jd_html: '' }; // Fallback
-        }
-      }));
-
+  
+    // Create a query that orders by timestamp in descending order (newest first)
+    const jobDescQuery = query(jobDescCollection, orderBy('timestamp', 'desc'));
+  
+    // Real-time listener for the collection
+    const unsubscribe = onSnapshot(jobDescQuery, async (snapshot) => {
+      const jobDescList = await Promise.all(
+        snapshot.docs.map(async (doc) => {
+          const summaryData = doc.data() as JobDescription;
+  
+          console.log('summaryData', summaryData);
+  
+          // Fetching references
+          const copyRef = summaryData.jd_copy_ref;
+          const htmlRef = summaryData.jd_html_ref;
+  
+          if (!copyRef || !htmlRef) {
+            console.error("Document references are missing:", { copyRef, htmlRef });
+            return { ...summaryData, jd_copy: '', jd_html: '' }; // Fallback
+          }
+  
+          try {
+            // Fetch the copy document
+            const copyDoc = await getDoc(copyRef);
+            const copyData = copyDoc.exists() ? copyDoc.data() : { jd_copy: '' };
+  
+            // Fetch the HTML document
+            const htmlDoc = await getDoc(htmlRef);
+            const htmlData = htmlDoc.exists() ? htmlDoc.data() : { html: '' };
+  
+            // Combine the summary with the copy and HTML data
+            return {
+              ...summaryData,
+              jd_copy: copyData.jd_copy || '', // Extract the copy
+              jd_html: htmlData.html || '' // Extract the HTML
+            };
+          } catch (error) {
+            console.error("Error fetching documents:", error);
+            return { ...summaryData, jd_copy: '', jd_html: '' }; // Fallback
+          }
+        })
+      );
+  
       setJobDescriptions(jobDescList.filter(Boolean)); // Filter out null entries
     });
-
+  
     // Clean up the listener on component unmount
     return () => unsubscribe();
   }, []);
@@ -146,6 +165,8 @@ export default function JobDescriptionsPage() {
       js_html: selectedJob.js_html || '',
       domain: selectedJob.domain || '',
       level: selectedJob.level || '',
+      status: selectedJob.status || "Applied",
+      notes: selectedJob.notes || ''
     });
   };
 
@@ -200,6 +221,70 @@ export default function JobDescriptionsPage() {
     }
   };
 
+    // Function to log outreach event
+    const logOutreachEvent = async () => {
+      if (!activeJobId) {
+        alert('No active job selected for outreach.');
+        return;
+      }
+
+      const timestamp = new Date();
+
+      try {
+        // Add a new document to the 'outreach-events' collection
+        await addDoc(collection(db, 'outreach-events'), {
+          application_id: activeJobId, // Use the active job ID
+          timestamp: timestamp,
+          target: target,
+          type: type,
+          message: message,
+          note: notes,
+        });
+
+        const profileRef = doc(db, 'li-profile', target);
+        await updateDoc(profileRef, {
+          email: targetEmail
+        })
+
+        alert('Outreach event logged successfully');
+        // Optionally reset the form fields
+        setTarget('');
+        setType('LI connect');
+        setMessage('');
+        setNotes('');
+      } catch (error) {
+        console.error('Error logging outreach event: ', error);
+        alert('Failed to log outreach event');
+      }
+    };
+
+    const handleImportClick = async () => {
+      console.log('handleImportClick')
+      try {
+        // Reference to the 'job-scan-html' collection in Firestore
+        const jobScanCollection = collection(db, "job-scan-html");
+    
+        // Query Firestore for documents where 'job-id' equals 'activeJobId'
+        const q = query(jobScanCollection, where("job-id", "==", activeJobId));
+        const querySnapshot = await getDocs(q);
+    
+        // Check if any documents were found
+        if (!querySnapshot.empty) {
+          // Assuming only one match, or use querySnapshot.docs.map if multiple
+          const jobData = querySnapshot.docs[0].data();
+          setFormData(prevState => ({
+            ...prevState,
+            js_html: jobData.html  // Assuming the HTML field is named 'html'
+          }));
+        } else {
+          console.log("No matching job description found.");
+        }
+      } catch (error) {
+        console.error("Error fetching job description:", error);
+      }
+    };
+  
+
   return (
     <div style={{ display: 'flex', height: '100vh', padding: '20px' }}>
       {/* Left Column - Job Descriptions List */}
@@ -244,6 +329,7 @@ export default function JobDescriptionsPage() {
         <Tabs value={activeTab} onChange={handleTabChange}>
           <Tab label="Details" />
           <Tab label="Keywords" />
+          <Tab label="Outreach" />
         </Tabs>
   
         {/* Tab Panels */}
@@ -277,6 +363,7 @@ export default function JobDescriptionsPage() {
                 fullWidth
                 margin="normal"
               />
+              <InputLabel id="domain">Domain</InputLabel>
               <Select
                 label="Domain"
                 name="domain"
@@ -287,7 +374,10 @@ export default function JobDescriptionsPage() {
                 <MenuItem value="Product">Product</MenuItem>
                 <MenuItem value="Web Developer">Web Developer</MenuItem>
                 <MenuItem value="AI Developer">AI Developer</MenuItem>
+                <MenuItem value="Project Manager">Project Manager</MenuItem>
               </Select>
+
+              <InputLabel id="level">Level</InputLabel>
               <Select
                 label="Level"
                 name="level"
@@ -300,7 +390,24 @@ export default function JobDescriptionsPage() {
                 <MenuItem value="Sr">Sr</MenuItem>
                 <MenuItem value="Director">Director</MenuItem>
                 <MenuItem value="Lead">Lead</MenuItem>
+                <MenuItem value="Technical">Technical</MenuItem>
               </Select>
+
+              <InputLabel id="status">Application Status</InputLabel>
+              <Select
+                label="status"
+                name="states"
+                value={formData.status}
+                onChange={handleSelectChange} // Use the new handler for Select
+                fullWidth
+              >
+                <MenuItem value="Applied">Applied</MenuItem>
+                <MenuItem value="Rejection">Rejection</MenuItem>
+                <MenuItem value="Freeze">Freeze</MenuItem>
+                <MenuItem value="Screening">Screening</MenuItem>
+                <MenuItem value="Canceled">Canceled</MenuItem>
+              </Select>
+
               <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
                 <Checkbox
                   name="is_pathrise"
@@ -325,6 +432,16 @@ export default function JobDescriptionsPage() {
                 fullWidth
                 multiline
                 rows={10}
+                margin="normal"
+              />
+              <TextField
+                label="Notes"
+                name="notes"
+                value={formData.notes}
+                onChange={handleInputChange}
+                fullWidth
+                multiline
+                rows={3}
                 margin="normal"
               />
             </form>
@@ -377,11 +494,17 @@ export default function JobDescriptionsPage() {
             {/* Job Scan HTML Row */}
             <div style={{ marginBottom: '16px' }}>
               <label><strong>Job Scan HTML:</strong></label>
+              <button
+                onClick={handleImportClick}  // Add the onClick event
+                className="bg-blue-600 text-white font-semibold px-6 py-2 rounded-lg shadow-lg hover:bg-blue-700 hover:shadow-xl focus:ring-4 focus:ring-blue-300 transition ease-in-out duration-300"
+              >
+                Import
+              </button>
               <TextField
                 name="js_html"
                 value={formData.js_html}
                 onChange={handleInputChange}
-                fullWidth
+                fullWidth 
                 multiline
                 rows={10}
                 variant="outlined"
@@ -389,6 +512,67 @@ export default function JobDescriptionsPage() {
             </div>
           </div>
         )}
+        {activeTab === 2 && (
+        <div>
+          {/* Outreach Tab Content */}
+          <h3>Outreach</h3>
+
+          {/* Input for Target */}
+          <div>
+            <label>Target:</label>
+            <input
+              type="text"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="Enter target"
+            />
+          </div>
+
+          {/* Input for email */}
+          <div>
+            <label htmlFor="">Email:</label>
+            <input type="text" 
+              value={targetEmail}
+              onChange={(e) => setTargetEmail(e.target.value)}
+              placeholder="Enter email"
+              />
+          </div>
+
+          {/* Select for Type */}
+          <div>
+            <label>Type:</label>
+            <select value={type} onChange={(e) => setType(e.target.value)}>
+              <option value="LI connect">LinkedIn Connect</option>
+              <option value="LI dm">LinkedIn DM</option>
+              <option value="email">Email</option>
+            </select>
+          </div>
+
+          {/* Input for Message */}
+          <div>
+            <label>Message:</label>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="Enter message"
+            />
+          </div>
+
+          {/* Input for Notes */}
+          <div>
+            <label>Notes:</label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Enter notes"
+            />
+          </div>
+
+          {/* Log Button */}
+          <button onClick={logOutreachEvent}>Log</button>
+        </div>
+      )}
+
       </div>
     </div>
   );
